@@ -16,7 +16,6 @@ load_dotenv()
 
 class ModelExplorer(App):
     BINDINGS = [Binding("q", "quit", "Quit")]
-
     CSS = """
     #model_container {
         layout: horizontal;
@@ -39,7 +38,7 @@ class ModelExplorer(App):
     def __init__(self, model_name: str):
         super().__init__()
         self.model_name = model_name
-        self.model = AutoModel.from_pretrained(model_name)
+        self.model = None
         self.tensor_offset = {}
 
     def compose(self) -> ComposeResult:
@@ -51,7 +50,43 @@ class ModelExplorer(App):
         yield Footer()
 
     def on_mount(self) -> None:
-        self.populate_tree()
+        try:
+            self.model = AutoModel.from_pretrained(self.model_name)
+            self.populate_tree()
+            self.show_model_summary()
+        except Exception as e:
+            self.show_error(f"Error loading model '{self.model_name}': {str(e)}")
+
+    def show_error(self, message: str):
+        details = self.query_one("#details")
+        content = Text(message, style="bold red")
+        panel = Panel(content, title="Error", border_style="red")
+        details.update(panel)
+
+    def show_model_summary(self):
+        details = self.query_one("#details")
+        if self.model is None:
+            content = Text(
+                "Model not loaded. Please check for errors.", style="bold red"
+            )
+            panel = Panel(content, title="Model Summary", border_style="red")
+        else:
+            total_params = sum(p.numel() for p in self.model.parameters())
+            trainable_params = sum(
+                p.numel() for p in self.model.parameters() if p.requires_grad
+            )
+
+            summary = f"""
+            Model: {self.model_name}
+            Total parameters: {total_params:,}
+            Trainable parameters: {trainable_params:,}
+            Layers: {len(list(self.model.modules()))}
+            """
+
+            content = Text(summary.strip())
+            panel = Panel(content, title="Model Summary", border_style="green")
+
+        details.update(panel)
 
     def populate_tree(self, node=None, current_layer=None, path=""):
         if node is None:
@@ -99,9 +134,8 @@ class ModelExplorer(App):
     def on_tree_node_highlighted(self, event: Tree.NodeHighlighted) -> None:
         node = event.node
         path = self.get_node_path(node)
-
-        if not path:  # Handle the case when the root node is highlighted
-            self.update_details(self.model, "Model")
+        if not path:  # Root node
+            self.show_model_summary()
             return
 
         if path[-1] in ["... (Next)", "... (Previous)"]:
@@ -125,9 +159,8 @@ class ModelExplorer(App):
     def on_tree_node_selected(self, event: Tree.NodeSelected) -> None:
         node = event.node
         path = self.get_node_path(node)
-
-        if not path:  # Handle the case when the root node is selected
-            self.update_details(self.model, "Model")
+        if not path:  # Root node
+            self.show_model_summary()
             return
 
         if str(path[-1]) in ["... (Next)", "... (Previous)"]:
@@ -183,26 +216,31 @@ class ModelExplorer(App):
                 content.append(f"Tensor Shape: {current_layer.shape}\n")
                 content.append(f"Tensor Type: {current_layer.dtype}\n")
                 content.append(f"Requires Grad: {current_layer.requires_grad}\n")
+            if part.startswith("Element "):
                 content.append("Tensor Values:\n")
                 content.append(
-                    str(current_layer.flatten()[: current_layer.shape[0]].tolist())
+                    str(
+                        current_layer.flatten()[
+                            : min(20, current_layer.numel())
+                        ].tolist()
+                    )
                 )
         elif isinstance(current_layer, torch.nn.Module):
             params = sum(p.numel() for p in current_layer.parameters())
             content.append(f"Module: {type(current_layer).__name__}\n")
-            content.append(f"Parameters: {params}\n")
+            content.append(f"Parameters: {params:,}\n")
             for name, param in current_layer.named_parameters():
                 content.append(f"\n{name}:\n")
-                content.append(f"  Shape: {param.shape}\n")
-                content.append(f"  Type: {param.dtype}\n")
-                content.append(f"  Requires Grad: {param.requires_grad}\n")
+                content.append(f" Shape: {param.shape}\n")
+                content.append(f" Type: {param.dtype}\n")
+                content.append(f" Requires Grad: {param.requires_grad}\n")
         elif isinstance(current_layer, torch.nn.Parameter):
             content.append(f"Parameter Shape: {current_layer.shape}\n")
             content.append(f"Parameter Type: {current_layer.dtype}\n")
             content.append(f"Requires Grad: {current_layer.requires_grad}\n")
             content.append("Parameter Values:\n")
             content.append(
-                str(current_layer.flatten()[: current_layer.shape[0]].tolist())
+                str(current_layer.flatten()[: min(20, current_layer.numel())].tolist())
             )
         else:
             content.append(f"Type: {type(current_layer).__name__}")
