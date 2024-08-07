@@ -217,11 +217,11 @@ class ModelExplorer(App):
                 content.append(f"Tensor Type: {current_layer.dtype}\n")
                 content.append(f"Requires Grad: {current_layer.requires_grad}\n")
             if part.startswith("Element "):
-                content.append("Tensor Values:\n")
+                content.append("Tensor Values (First 50):\n")
                 content.append(
                     str(
                         current_layer.flatten()[
-                            : min(20, current_layer.numel())
+                            : min(50, current_layer.numel())
                         ].tolist()
                     )
                 )
