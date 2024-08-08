@@ -6,7 +6,7 @@ from transformers import AutoModel
 import numpy as np
 from typing import List, Any
 from textual.app import App, ComposeResult
-from textual.widgets import Tree, Header, Footer, Static
+from textual.widgets import Tree, Header, Footer, Static, Input, Button
 from textual.containers import Container, ScrollableContainer
 from textual.binding import Binding
 from rich.text import Text
@@ -14,6 +14,7 @@ from rich.panel import Panel
 from rich.table import Table
 
 load_dotenv()
+
 
 class ModelComparer(App):
     BINDINGS = [Binding("q", "quit", "Quit")]
@@ -38,7 +39,7 @@ class ModelComparer(App):
 
     #details_container {
         width: 100%;
-        height: 70%;
+        height: 60%;
         layout: horizontal;
     }
 
@@ -49,10 +50,29 @@ class ModelComparer(App):
 
     #difference_container {
         width: 100%;
-        height: 30%;
+        height: 40%;
+        layout: vertical;
+    }
+
+    #threshold_container {
+        width: 100%;
+        height: 3;
+        layout: horizontal;
+    }
+
+    #threshold_input {
+        width: 70%;
+    }
+
+    #threshold_button {
+        width: 30%;
+    }
+
+    #difference_table {
+        width: 100%;
+        height: 1fr;
     }
     """
-
 
     def __init__(self, model_name_1: str, model_name_2: str):
         super().__init__()
@@ -62,6 +82,7 @@ class ModelComparer(App):
         self.model_2 = None
         self.tensor_offset = {}
         self.selected_tensors = [None, None]
+        self.threshold = 0.0
 
     def compose(self) -> ComposeResult:
         yield Header()
@@ -71,9 +92,12 @@ class ModelComparer(App):
                 with Container(id="details_container"):
                     yield Static(id="details_1")
                     yield Static(id="details_2")
-                yield Static(id="difference_container")
+                with Container(id="difference_container"):
+                    with Container(id="threshold_container"):
+                        yield Input(placeholder="Enter threshold", id="threshold_input")
+                        yield Button("Apply", id="threshold_button")
+                    yield Static(id="difference_table")
         yield Footer()
-
 
     def on_mount(self) -> None:
         try:
@@ -83,6 +107,18 @@ class ModelComparer(App):
             self.show_model_summary()
         except Exception as e:
             self.show_error(f"Error loading models: {str(e)}")
+
+    def on_button_pressed(self, event: Button.Pressed) -> None:
+        if event.button.id == "threshold_button":
+            self.update_threshold()
+
+    def update_threshold(self) -> None:
+        threshold_input = self.query_one("#threshold_input")
+        try:
+            self.threshold = float(threshold_input.value)
+            self.update_difference_view()
+        except ValueError:
+            self.show_error("Invalid threshold value. Please enter a number.")
 
     def show_error(self, message: str):
         details_1 = self.query_one("#details_1")
@@ -96,13 +132,19 @@ class ModelComparer(App):
         details_1 = self.query_one("#details_1")
         details_2 = self.query_one("#details_2")
 
-        for i, (model_name, model) in enumerate([(self.model_name_1, self.model_1), (self.model_name_2, self.model_2)]):
+        for i, (model_name, model) in enumerate(
+            [(self.model_name_1, self.model_1), (self.model_name_2, self.model_2)]
+        ):
             if model is None:
-                content = Text("Model not loaded. Please check for errors.", style="bold red")
+                content = Text(
+                    "Model not loaded. Please check for errors.", style="bold red"
+                )
                 panel = Panel(content, title="Model Summary", border_style="red")
             else:
                 total_params = sum(p.numel() for p in model.parameters())
-                trainable_params = sum(p.numel() for p in model.parameters() if p.requires_grad)
+                trainable_params = sum(
+                    p.numel() for p in model.parameters() if p.requires_grad
+                )
                 summary = f"""
                 Model: {model_name}
                 Total parameters: {total_params:,}
@@ -220,7 +262,9 @@ class ModelComparer(App):
         return path
 
     def update_details(self, current_layer, part, model_name):
-        details = self.query_one("#details_1" if model_name == self.model_name_1 else "#details_2")
+        details = self.query_one(
+            "#details_1" if model_name == self.model_name_1 else "#details_2"
+        )
         content = Text()
 
         if isinstance(current_layer, torch.Tensor):
@@ -232,7 +276,13 @@ class ModelComparer(App):
                 content.append(f"Requires Grad: {current_layer.requires_grad}\n")
                 if part.startswith("Element "):
                     content.append("Tensor Values (First 20):\n")
-                    content.append(str(current_layer.flatten()[:min(20, current_layer.numel())].tolist()))
+                    content.append(
+                        str(
+                            current_layer.flatten()[
+                                : min(20, current_layer.numel())
+                            ].tolist()
+                        )
+                    )
         elif isinstance(current_layer, torch.nn.Module):
             params = sum(p.numel() for p in current_layer.parameters())
             content.append(f"Module: {type(current_layer).__name__}\n")
@@ -247,7 +297,9 @@ class ModelComparer(App):
             content.append(f"Parameter Type: {current_layer.dtype}\n")
             content.append(f"Requires Grad: {current_layer.requires_grad}\n")
             content.append("Parameter Values:\n")
-            content.append(str(current_layer.flatten()[:min(20, current_layer.numel())].tolist()))
+            content.append(
+                str(current_layer.flatten()[: min(20, current_layer.numel())].tolist())
+            )
         else:
             content.append(f"Type: {type(current_layer).__name__}")
 
@@ -263,43 +315,60 @@ class ModelComparer(App):
         self.update_difference_view()
 
     def update_difference_view(self):
-        difference_container = self.query_one("#difference_container")
-        
+        difference_table = self.query_one("#difference_table")
+
         if self.selected_tensors[0] is None or self.selected_tensors[1] is None:
-            difference_container.update("Select tensor elements from both models to compare")
+            difference_table.update(
+                "Select tensor elements from both models to compare"
+            )
             return
 
-        if not isinstance(self.selected_tensors[0], torch.Tensor) or not isinstance(self.selected_tensors[1], torch.Tensor):
-            difference_container.update("Selected items are not comparable tensors")
+        if not isinstance(self.selected_tensors[0], torch.Tensor) or not isinstance(
+            self.selected_tensors[1], torch.Tensor
+        ):
+            difference_table.update("Selected items are not comparable tensors")
             return
 
         if self.selected_tensors[0].shape != self.selected_tensors[1].shape:
-            difference_container.update("Selected tensors have different shapes")
+            difference_table.update("Selected tensors have different shapes")
             return
 
         difference = (self.selected_tensors[0] - self.selected_tensors[1]).abs()
         flat_difference = difference.flatten()
-        top_10_values, top_10_indices = torch.topk(flat_difference, min(10, flat_difference.numel()))
 
-        table = Table(title="Top 10 Differences", show_header=True, header_style="bold magenta")
+        # Filter differences above threshold and sort
+        above_threshold = flat_difference > self.threshold
+        filtered_differences = flat_difference[above_threshold]
+        filtered_indices = above_threshold.nonzero().squeeze()
+
+        if filtered_differences.numel() == 0:
+            difference_table.update(f"No differences above threshold {self.threshold}")
+            return
+
+        sorted_indices = torch.argsort(filtered_differences, descending=True)
+
+        table = Table(show_header=True, header_style="bold magenta")
         table.add_column("Location", style="dim", width=20)
         table.add_column("Difference", justify="right")
         table.add_column(f"Value in {self.model_name_1}", justify="right")
         table.add_column(f"Value in {self.model_name_2}", justify="right")
 
-        for value, index in zip(top_10_values, top_10_indices):
+        for idx in sorted_indices:
+            index = filtered_indices[idx]
+            value = filtered_differences[idx]
             location = np.unravel_index(index.item(), difference.shape)
             value_1 = self.selected_tensors[0][location].item()
             value_2 = self.selected_tensors[1][location].item()
             table.add_row(
-                str(location),
-                f"{value.item():.6f}",
-                f"{value_1:.6f}",
-                f"{value_2:.6f}"
+                str(location), f"{value.item():.6f}", f"{value_1:.6f}", f"{value_2:.6f}"
             )
 
-        panel = Panel(table, title="Tensor Difference", border_style="green")
-        difference_container.update(panel)
+        panel = Panel(
+            table,
+            title=f"Tensor Differences (Threshold: {self.threshold})",
+            border_style="green",
+        )
+        difference_table.update(panel)
 
     def navigate_tensor(self, node):
         path = self.get_node_path(node)
@@ -336,9 +405,11 @@ class ModelComparer(App):
     def action_quit(self):
         self.exit()
 
+
 def compare_models(model_name_1: str, model_name_2: str):
     app = ModelComparer(model_name_1, model_name_2)
     app.run()
+
 
 if __name__ == "__main__":
     fire.Fire(compare_models)
